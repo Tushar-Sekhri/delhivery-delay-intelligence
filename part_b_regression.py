@@ -9,6 +9,8 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.pipeline import Pipeline
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.model_selection import KFold, cross_val_score
+
 
 data = pd.read_csv("data/modelling_table.csv")
 X = data[FEATURES]           
@@ -81,6 +83,7 @@ for d, (_, _, v) in zip(depths, depth_rows):
 print("best depth:", best_depth, "val_rmse:", best_val)
 
 
+
 # Task 5: four candidate models 
 models = {
     "linear_regression": Pipeline([("scaler", StandardScaler()),
@@ -100,3 +103,53 @@ for name, model in models.items():
 val_table = pd.DataFrame(metric_rows,
                          columns=["model", "split", "MAE", "MSE", "RMSE", "R2"])
 print(val_table.round(4))
+
+
+
+# ---------- Task 6: learning-rate experiment ----------
+lr_rows = []
+for lr in [0.01, 0.1, 1.0]:
+    gb = GradientBoostingRegressor(n_estimators=100, learning_rate=lr, random_state=42)
+    gb.fit(X_train, y_train)
+    pred = gb.predict(X_val)
+    lr_rmse = np.sqrt(mean_squared_error(y_val, pred))
+    lr_r2 = r2_score(y_val, pred)
+    lr_rows.append([lr, round(lr_rmse, 4), round(lr_r2, 4)])
+
+lr_table = pd.DataFrame(lr_rows, columns=["learning_rate", "val_rmse", "val_r2"])
+lr_table.to_csv("outputs/part_b_gb_learning_rate.csv", index=False)
+print(lr_table)
+
+
+# ---------- Task 7: cross-validation and final test ----------
+# Rank the four real candidates (not the baseline) by validation RMSE
+candidates = val_table[val_table["model"] != "mean_baseline"]
+ranked = candidates.sort_values("RMSE")["model"].tolist()
+top_two = ranked[:2]
+final_name = ranked[0]
+print("validation ranking:", ranked)
+
+# Cross-validate the top two on train + validation rows, same KFold for both
+X_trainval = pd.concat([X_train, X_val])
+y_trainval = pd.concat([y_train, y_val])
+kfold = KFold(n_splits=5, shuffle=True, random_state=42)
+
+cv_rows = []
+for name in top_two:
+    scores = cross_val_score(models[name], X_trainval, y_trainval, cv=kfold)
+    cv_rows.append([name, round(scores.mean(), 4), round(scores.std(), 4)])
+
+cv_table = pd.DataFrame(cv_rows, columns=["model", "mean_r2", "std_r2"])
+cv_table.to_csv("outputs/part_b_cv.csv", index=False)
+print(cv_table)
+
+# Score the final model on the test rows, once (it is already fitted on train)
+test_pred = models[final_name].predict(X_test)
+mae, mse, rmse, r2 = score(y_test, test_pred)
+metric_rows.append([final_name, "test", mae, mse, rmse, r2])
+
+all_metrics = pd.DataFrame(metric_rows,
+                           columns=["model", "split", "MAE", "MSE", "RMSE", "R2"])
+all_metrics[["MAE", "MSE", "RMSE", "R2"]] = all_metrics[["MAE", "MSE", "RMSE", "R2"]].round(4)
+all_metrics.to_csv("outputs/part_b_metrics.csv", index=False)
+print(all_metrics)
