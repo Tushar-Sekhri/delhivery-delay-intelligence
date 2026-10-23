@@ -6,6 +6,9 @@ from sklearn.preprocessing import StandardScaler
 from src.shipment_prep import FEATURES
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.pipeline import Pipeline
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 
 data = pd.read_csv("data/modelling_table.csv")
 X = data[FEATURES]           
@@ -19,7 +22,7 @@ X_val, X_test, y_val, y_test = train_test_split(
 
 print(len(X_train), len(X_val), len(X_test))   
 
-# Task 2: fit the scaler on TRAINING rows only, then transform
+
 scaler = StandardScaler()
 X_train_scaled = scaler.fit_transform(X_train)   
 X_test_scaled = scaler.transform(X_test)         
@@ -37,7 +40,7 @@ checks = pd.DataFrame({
 checks.to_csv("outputs/part_b_checks.csv", index=False)
 print(checks)
 
-# ---------- helper: the four scores used in the brief ----------
+
 def score(y_true, y_pred):
     mae = mean_absolute_error(y_true, y_pred)
     mse = mean_squared_error(y_true, y_pred)
@@ -45,16 +48,16 @@ def score(y_true, y_pred):
     r2 = r2_score(y_true, y_pred)
     return mae, mse, rmse, r2
 
-metric_rows = []   # collects rows for part_b_metrics.csv (written later)
+metric_rows = []   # collects rows for part_b_metrics.csv 
 
-# Task 3: baseline = predict the training mean for every validation row
+# Task 3: baseline -> predict the training mean for every validation row
 baseline_pred = np.full(len(y_val), y_train.mean())
 mae, mse, rmse, r2 = score(y_val, baseline_pred)
 metric_rows.append(["mean_baseline", "val", mae, mse, rmse, r2])
 print("baseline val R2:", round(r2, 4))
 
-# Task 4: tree-depth diagnostic
-depths = [1, 2, 3, 4, 6, 8, 12, None]    # None = no depth limit
+# Task 4: tree-depth 
+depths = [1, 2, 3, 4, 6, 8, 12, None]    
 depth_rows = []
 for d in depths:
     tree = DecisionTreeRegressor(max_depth=d, random_state=42)
@@ -76,3 +79,24 @@ for d, (_, _, v) in zip(depths, depth_rows):
         best_val = v
         best_depth = d
 print("best depth:", best_depth, "val_rmse:", best_val)
+
+
+# Task 5: four candidate models 
+models = {
+    "linear_regression": Pipeline([("scaler", StandardScaler()),
+                                   ("model", LinearRegression())]),
+    "decision_tree": DecisionTreeRegressor(max_depth=best_depth, random_state=42),
+    "random_forest": RandomForestRegressor(n_estimators=100, random_state=42),
+    "gradient_boosting": GradientBoostingRegressor(
+        n_estimators=100, learning_rate=0.1, random_state=42),
+}
+
+for name, model in models.items():
+    model.fit(X_train, y_train)                
+    val_pred = model.predict(X_val)            
+    mae, mse, rmse, r2 = score(y_val, val_pred)
+    metric_rows.append([name, "val", mae, mse, rmse, r2])
+
+val_table = pd.DataFrame(metric_rows,
+                         columns=["model", "split", "MAE", "MSE", "RMSE", "R2"])
+print(val_table.round(4))
