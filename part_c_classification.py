@@ -67,3 +67,156 @@ models_table = pd.DataFrame(
     dtype=object)
 models_table.to_csv("outputs/part_c_models.csv", index=False)
 print(models_table)
+
+# Task 3: which columns carry signal 
+from sklearn.feature_selection import SelectKBest, f_classif
+from src.shipment_prep import NOISE_COLUMNS
+
+# forest importance on all 17 columns, training rows only
+rf_all = RandomForestClassifier(n_estimators=100, random_state=42)
+rf_all.fit(X_train, y_train)
+
+# F-score for every column, training rows only
+selector_all = SelectKBest(f_classif, k="all")
+selector_all.fit(X_train, y_train)
+
+scores = pd.DataFrame({
+    "feature": FEATURES,
+    "f_score": selector_all.scores_,
+    "rf_importance": rf_all.feature_importances_,
+})
+scores["f_rank"] = scores["f_score"].rank(ascending=False, method="first").astype(int)
+scores["is_noise"] = scores["feature"].isin(NOISE_COLUMNS)
+scores = scores.sort_values("f_rank")[["feature", "f_score", "f_rank", "rf_importance", "is_noise"]]
+scores[["f_score", "rf_importance"]] = scores[["f_score", "rf_importance"]].round(4)
+scores.to_csv("outputs/part_c_feature_scores.csv", index=False)
+print(scores)
+print("noise share of forest importance:", round(scores.loc[scores["is_noise"], "rf_importance"].sum(), 4))
+
+# validation F1 when keeping only the top k columns
+selectk_rows = []
+for k in [5, 7, 10, 12, 17]:
+    pipe = Pipeline([("selector", SelectKBest(f_classif, k=k)),
+                     ("model", RandomForestClassifier(n_estimators=100, random_state=42))])
+    pipe.fit(X_train, y_train)
+    selectk_rows.append([k, round(f1_score(y_val, pipe.predict(X_val)), 4)])
+
+selectk_table = pd.DataFrame(selectk_rows, columns=["k", "val_f1"])
+selectk_table.to_csv("outputs/part_c_selectk.csv", index=False)
+print(selectk_table)
+
+# Task 4: tuning on the top 7 columns 
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
+
+# fit the selector on TRAINING rows only, then transform train and validation
+selector7 = SelectKBest(f_classif, k=7)
+X_train7 = selector7.fit_transform(X_train, y_train)
+X_val7 = selector7.transform(X_val)
+
+param_grid = {
+    "n_estimators": [50, 100, 150],
+    "max_depth": [4, 6, 8],
+    "min_samples_leaf": [1, 5, 10],
+}
+
+grid_search = GridSearchCV(RandomForestClassifier(random_state=42), param_grid, cv=5)
+grid_search.fit(X_train7, y_train)
+
+random_search = RandomizedSearchCV(RandomForestClassifier(random_state=42), param_grid,
+                                   n_iter=9, cv=5, random_state=42)
+random_search.fit(X_train7, y_train)
+
+# the untuned forest on the same 7 columns
+default_forest = RandomForestClassifier(n_estimators=100, random_state=42)
+default_forest.fit(X_train7, y_train)
+
+tuning_rows = []
+for name, search in [("grid_search", grid_search), ("randomized_search", random_search)]:
+    candidates = len(search.cv_results_["params"])
+    folds = 5
+    val_f1 = f1_score(y_val, search.best_estimator_.predict(X_val7))
+    tuning_rows.append([name, candidates, folds, candidates * folds,
+                        str(search.best_params_),
+                        round(search.best_score_, 4), round(val_f1, 4)])
+
+default_f1 = f1_score(y_val, default_forest.predict(X_val7))
+tuning_rows.append(["default_forest_same_7_features", 1, 0, 1,
+                    "n_estimators=100, max_depth=None, min_samples_leaf=1",
+                    "", round(default_f1, 4)])
+
+tuning_table = pd.DataFrame(
+    tuning_rows,
+    columns=["search", "candidates", "cv_folds", "total_fits",
+             "best_params", "best_cv_accuracy", "val_f1"],
+    dtype=object)
+tuning_table.to_csv("outputs/part_c_tuning.csv", index=False)
+print(tuning_table.to_string())
+
+# Task 5: choose the final configuration 
+configs = {
+    "default_forest_same_7_features": {"n_estimators": 100, "max_depth": None, "min_samples_leaf": 1},
+    "grid_search": grid_search.best_params_,
+    "randomized_search": random_search.best_params_,
+}
+val_f1_by_name = {row[0]: row[6] for row in tuning_rows}
+
+chosen_from = None
+best_val_f1 = -1
+# order = tie-break priority; ">" means an earlier name keeps the win on a tie
+for name in ["default_forest_same_7_features", "grid_search", "randomized_search"]:
+    if val_f1_by_name[name] > best_val_f1:
+        best_val_f1 = val_f1_by_name[name]
+        chosen_from = name
+chosen_params = configs[chosen_from]
+print("chosen:", chosen_from, chosen_params)
+
+final_model = Pipeline([
+    ("selector", SelectKBest(f_classif, k=7)),
+    ("model", RandomForestClassifier(random_state=42, **chosen_params)),
+])
+final_model.fit(X_train, y_train)          # training rows only
+
+#  Task 6: alert threshold 
+val_proba = final_model.predict_proba(X_val)[:, 1]     # probability of "delayed"
+thresholds = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+
+threshold_rows = []
+for t in thresholds:
+    pred = (val_proba >= t).astype(int)
+    threshold_rows.append([t] + evaluate(y_val, pred))
+
+threshold_table = pd.DataFrame(
+    threshold_rows,
+    columns=["threshold", "TN", "FP", "FN", "TP", "accuracy", "precision", "recall", "f1"],
+    dtype=object)
+threshold_table.to_csv("outputs/part_c_thresholds.csv", index=False)
+print(threshold_table.to_string())
+
+# operations rule: highest threshold whose validation recall is at least 0.80
+chosen_threshold = 0.1
+for row in threshold_rows:
+    if row[7] >= 0.80:          # row[7] is recall
+        chosen_threshold = row[0]
+print("chosen threshold:", chosen_threshold)
+
+# Task 7: one test evaluation
+test_proba = final_model.predict_proba(X_test)[:, 1]
+test_pred = (test_proba >= chosen_threshold).astype(int)
+
+final_test = pd.DataFrame(
+    [[chosen_threshold] + evaluate(y_test, test_pred)],
+    columns=["threshold", "TN", "FP", "FN", "TP", "accuracy", "precision", "recall", "f1"],
+    dtype=object)
+final_test.to_csv("outputs/part_c_final_test.csv", index=False)
+print(final_test.to_string())
+
+# one-row config file, read later by package_model.py
+max_depth_value = "unlimited" if chosen_params["max_depth"] is None else chosen_params["max_depth"]
+final_config = pd.DataFrame(
+    [[7, chosen_params["n_estimators"], max_depth_value,
+      chosen_params["min_samples_leaf"], chosen_threshold, chosen_from]],
+    columns=["selector_k", "n_estimators", "max_depth", "min_samples_leaf",
+             "threshold", "chosen_from"],
+    dtype=object)
+final_config.to_csv("outputs/part_c_final_config.csv", index=False)
+print(final_config.to_string())
