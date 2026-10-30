@@ -31,7 +31,7 @@ All numbers below come from `outputs/part_a_delay_by_group.csv` and `outputs/par
 
 4. **Strongest correlations with delivery_hours.** Ranked by absolute value, the top three columns are promised_hours (0.8372), distance_km (0.4013) and n_stops (0.3247). Longer promises, longer lanes and more stops on the rider's route all go with longer delivery times.
 
-5. **Log transform of declared value.** Before the transform, the mean of `declared_value_inr` (1533.0542) is well above its median (1121.5) because a few expensive parcels pull the mean up, so the distribution is right-skewed. After taking the natural log, the mean (7.0277) and median (7.0224) are almost equal, so the distribution is much more symmetric and better suited to the models.
+5. **Log transform of declared value.** Before the transform, the mean of `declared_value_inr` INR 1,533.05 is well above its median INR 1,121.50 because a few expensive parcels pull the mean up, so the distribution is right-skewed. After taking the natural log, the mean (7.0277) and median (7.0224) are almost equal, so the distribution is much more symmetric and better suited to the models.
 
 ## Model results (regression)
 
@@ -98,7 +98,7 @@ All numbers are from the `outputs/part_c_*.csv` files. The split is stratified (
 2. **Weekly share of parcels flagged.** On validation 44 of 180 parcels were flagged at 0.5 (0.2444). Investigate if the weekly share leaves 0.15 to 0.35.
 3. **Recall on parcels whose outcome is now known.** Test recall was 0.7561. Retrain if it falls below 0.65 over a month of delivered parcels.
 
-**(c) Retraining, the sale window and drift****(c) Retraining, the sale window and drift**
+**(c) Retraining, the sale window and drift**
 
 *Schedule.* I would retrain the classifier once a month on all delivered parcels, and earlier if any trigger in (b) fires. Each retrain would re-run the full chain (`part_a_clean_eda.py` through `package_model.py`), so the medians, the 7 selected columns, the threshold and the hub segments are all refreshed together. The old model would stay in place until the new one has been checked on a held-out split, with its recall at the chosen threshold compared against the 0.80 target.
 
