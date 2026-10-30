@@ -31,3 +31,54 @@ All numbers are from `outputs/part_b_metrics.csv`, `part_b_tree_depth.csv`, `par
 **Which model I would ship.** I would ship linear regression. It had the lowest validation RMSE (4.8912 vs 4.9165 hours) and it is the model I scored on the test rows (R² 0.9493, RMSE 4.5235 hours), so its test figure is an honest estimate. Gradient boosting had a slightly higher cross-validated R² (0.9353 vs 0.9261), but the gap is small, in hours it is a fraction of an hour, and linear regression is simpler to explain to planners and faster to run. If planners later need the last bit of accuracy, gradient boosting would be the first alternative to test.
 
 **Final test.** Linear regression, the validation winner, was scored once on the test rows: R² 0.9493, RMSE 4.5235 hours, MAE 3.5671 hours.
+
+## Model results (classification)
+
+All numbers are from the `outputs/part_c_*.csv` files. The split is stratified (`random_state=42`): 840 train / 180 validation / 180 test, with 195 / 42 / 41 delayed parcels.
+
+**Blind baseline.** A model that predicts "not delayed" for every parcel has a validation accuracy of 0.7667, because most parcels are on time. It catches none of the 42 delayed parcels (TP 0, recall 0), so it is useless for the operations goal. Accuracy alone would hide this, which is why precision, recall and F1 are tracked too. Logistic regression (F1 0.8046), the best decision tree (depth 6, F1 0.7470) and the default random forest (F1 0.8000) all beat the baseline's accuracy, with accuracies between 0.8833 and 0.9111.
+
+**Noise columns.** The five bookkeeping columns together hold 0.2253 of the forest's importance, even though they should carry no signal. All five fall outside the top 7 by F-score (ranks 8, 12, 14, 16 and 17, with F-scores between 0.0230 and 4.5847). The seven top-ranked columns are distance_km, hub_tier, hub_daily_capacity, n_stops, promised_hours, rain_flag and sale_event_flag, with F-scores between 36.7281 and 389.2131. A random forest splits on whatever column gives the best split at each step, and with random numbers it can always find some split that looks useful on the training rows, so it hands every column a share of importance. The five noise columns still got 0.2253 combined, and label_print_batch (0.0462) and sticker_serial_mod (0.0496) scored higher than sale_event_flag (0.0333), which is a real signal. The F-score avoids this because it tests each column on its own: it asks whether delayed and on-time parcels have clearly different averages in that column. For the noise columns the answer is no (F-scores of 0.0230 to 4.5847), while the real columns scored 36.7281 or more. So importance alone cannot tell signal from noise here, but the F-score separates them cleanly.
+
+**Choosing k.** Validation F1 for k = 5, 7, 10, 12 and 17 is 0.6988, 0.8333, 0.8140, 0.8049 and 0.8000. k = 7 is best: k = 5 drops real signal (rain_flag and sale_event_flag) and larger k lets in noise columns. I used k = 7 from then on.
+
+**Tuning.** Tuning did not beat the untuned forest on validation. Grid search (best cross-validated accuracy 0.8952) reached a validation F1 of 0.7750, randomized search (0.8905) reached 0.7901, and the default forest on the same 7 columns reached 0.8333. The final model is therefore the default forest (100 trees, no depth limit, min_samples_leaf 1). The tuned forests did better in cross-validation on the training rows, but that did not carry over to the validation rows, where the untuned forest scored highest (0.8333 against 0.7750 and 0.7901). The validation set has only 42 delayed parcels, so every parcel that changes from caught to missed (or the reverse) moves F1 by roughly one hundredth. A gap of 0.04 to 0.06 is therefore only a handful of parcels, which could easily be luck. Cross-validated accuracy (0.8952 and 0.8905) was measured over all 840 training rows in 5 folds, so it is a steadier signal, but it is also a different metric from validation F1. The honest conclusion is that tuning gave no reliable gain here, and picking the winner from one 180-row validation split is itself uncertain. I kept the default forest because it had the highest validation F1, which is the rule in the brief.
+
+**Alert threshold.** The final model's validation probabilities were scored at thresholds 0.1 to 0.9. Recall falls as the threshold rises: 0.9762 at 0.1, 0.8333 at 0.5, 0.7619 at 0.6 and 0.2857 at 0.9. The highest threshold with recall of at least 0.80 is **0.5**. At 0.5 the model catches 35 of 42 delayed parcels (recall 0.8333) with 9 false alarms (precision 0.7955). Raising the threshold to 0.6 would cut false alarms to 4 (precision 0.8889) but miss 10 delayed parcels instead of 7. Because a missed delayed parcel costs more than an unnecessary call, I kept 0.5.
+
+**Test result.** Scored once on the test rows at threshold 0.5: precision 0.6889, recall 0.7561 and F1 0.7209 (TN 125, FP 14, FN 10, TP 31). Test recall is lower than validation recall (0.8333). The test set has only 41 delayed parcels, so each missed parcel moves recall by about 2.4 percentage points, and the drop may be noise. It also shows that a threshold chosen to reach 0.80 recall on one small validation split does not guarantee the same recall on new data.
+
+## Production plan
+
+**(a) Production-readiness characteristics**
+
+| Characteristic | Where it appears in this repository |
+|---|---|
+| Accuracy | Test precision 0.6889, recall 0.7561 and F1 0.7209 (`part_c_final_test.csv`); the regression test R² is 0.9493 (`part_b_metrics.csv`) |
+| Reproducibility | Fixed `random_state` values, pinned `requirements.txt`, and scripts that run in a fixed order from the README |
+| Consistency | `predict_delay.py` imports the same `clean_shipments` and `build_features` used in training, with the stored medians in `models/impute_values.csv` |
+| Reliability | `part_d_reload_check.csv` shows the reloaded model gives identical probabilities (difference 0.0); the scoring output is byte-identical across two runs |
+| Maintainability | Shared code lives in `src/shipment_prep.py`, and each Part has its own script |
+| Monitorability | The quantities in (b) below, all computed from columns already in the pipeline |
+
+**(b) Quantities to monitor**
+
+1. **Weekly delayed share of delivered parcels.** The historical rate is 0.2317. Investigate if it moves outside 0.15 to 0.30 for two weeks in a row.
+2. **Weekly share of parcels flagged.** On validation 44 of 180 parcels were flagged at 0.5 (0.2444). Investigate if the weekly share leaves 0.15 to 0.35.
+3. **Recall on parcels whose outcome is now known.** Test recall was 0.7561. Retrain if it falls below 0.65 over a month of delivered parcels.
+
+**(c) Retraining, the sale window and drift****(c) Retraining, the sale window and drift**
+
+*Schedule.* I would retrain the classifier once a month on all delivered parcels, and earlier if any trigger in (b) fires. Each retrain would re-run the full chain (`part_a_clean_eda.py` through `package_model.py`), so the medians, the 7 selected columns, the threshold and the hub segments are all refreshed together. The old model would stay in place until the new one has been checked on a held-out split, with its recall at the chosen threshold compared against the 0.80 target.
+
+*Sale window.* The 15-28 September sale period (`sale_event_flag`) is one of the seven columns the model relies on (F-score 36.7281), so delivery behaves differently during it. Weekly monitoring numbers from those two weeks should be compared with the previous sale window, not with ordinary weeks. A higher delayed share or flagged share during the sale is expected and should not by itself trigger a retrain. A sale-week result that is clearly worse than the last sale window would be a real warning sign. Because the data holds only one sale window, I would also wait for a second one before trusting the model's sale-period behaviour.
+
+*Drift.* Here, data drift would show up in the columns the model leans on most: longer average lane distance (`distance_km`, the top-ranked column), more stops per route (`n_stops`), a change in the mix of hub tiers, or a larger share of Express parcels (which have the shortest promise and the highest delay rate, 0.4897). Concept drift would show up as recall on delivered parcels falling below the trigger even though the input columns look stable, for example if hubs change how they operate. The hub segments would also be recomputed at each retrain, because a hub's behaviour can move it between Standard, Watch and Escalate.
+
+## Limitations
+
+1. **Synthetic data.** All shipments come from a generator script, so the strong patterns (distance, tier, service type) are by design. Real Delhivery data would be noisier, and these scores would likely be lower.
+2. **Few delayed parcels in the test set.** The test set has only 41 delayed parcels, so each one moves recall by about 2.4 percentage points. Test recall (0.7561) differing from validation recall (0.8333) may be noise.
+3. **Threshold tuned on one validation split.** The 0.5 threshold was chosen on 180 validation rows with 42 delayed parcels, and a different split could give a different threshold.
+4. **Small hub profiles.** Each hub profile rests on 50 parcels, and K-Means clusters only 24 hubs, so segments could change with more data.
+5. **Single sale window and three months of data.** The model has seen one sale period, so how it behaves in other events is untested.
